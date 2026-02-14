@@ -8,6 +8,7 @@ export interface ScraperOptions {
   maxScrolls?: number;
   profile?: string;
   limit?: number;
+  json?: boolean;
 }
 
 export interface LinkedInPost {
@@ -19,6 +20,8 @@ export interface LinkedInPost {
   numShares: number;
   url: string;
 }
+
+let log = (...args: any[]) => console.error(...args);
 
 function extractPosts(data: any): LinkedInPost[] {
   const posts: LinkedInPost[] = [];
@@ -131,7 +134,7 @@ async function autoScroll(page: Page, maxScrolls: number = 100, shouldStop?: () 
 
   for (let i = 0; i < maxScrolls; i++) {
     if (shouldStop?.()) {
-      console.log(`Reached post limit. (${i} scrolls)`);
+      log(`Reached post limit. (${i} scrolls)`);
       return;
     }
 
@@ -140,7 +143,7 @@ async function autoScroll(page: Page, maxScrolls: number = 100, shouldStop?: () 
     if (currentHeight === previousHeight) {
       noChangeCount++;
       if (noChangeCount >= 3) {
-        console.log(`No more posts to load. (${i} scrolls)`);
+        log(`No more posts to load. (${i} scrolls)`);
         return;
       }
     } else {
@@ -152,20 +155,23 @@ async function autoScroll(page: Page, maxScrolls: number = 100, shouldStop?: () 
     await page.waitForTimeout(2000);
 
     if (i % 5 === 0) {
-      console.log(`  ↓ Scrolling... (${i}/${maxScrolls})`);
+      log(`  ↓ Scrolling... (${i}/${maxScrolls})`);
     }
   }
 
-  console.log(`Reached max scrolls (${maxScrolls}).`);
+  log(`Reached max scrolls (${maxScrolls}).`);
 }
 
 export async function getLinkedInPosts(options: ScraperOptions = {}): Promise<LinkedInPost[]> {
   const outputDir = options.output || process.cwd();
   const maxScrolls = options.maxScrolls || 100;
 
+  // In json mode, suppress logs (progress goes to stderr only if not json)
+  log = options.json ? () => {} : (...args: any[]) => console.error(...args);
+
   fs.mkdirSync(outputDir, { recursive: true });
 
-  console.log("🚀 Starting LinkedIn post scraper...\n");
+  log("🚀 Starting LinkedIn post scraper...\n");
 
   const context: BrowserContext = await launchBrowser();
 
@@ -177,7 +183,7 @@ export async function getLinkedInPosts(options: ScraperOptions = {}): Promise<Li
     const username = options.profile
       ? extractUsernameFromUrl(options.profile)
       : await getProfileUsername(page);
-    console.log(`👤 Profile: ${username}\n`);
+    log(`👤 Profile: ${username}\n`);
 
     // Collect posts via network interception
     const allPosts = new Map<string, LinkedInPost>();
@@ -195,7 +201,7 @@ export async function getLinkedInPosts(options: ScraperOptions = {}): Promise<Li
             for (const post of posts) {
               if (post.id && post.text && !allPosts.has(post.id)) {
                 allPosts.set(post.id, post);
-                console.log(`  📝 Found post #${allPosts.size}: "${post.text.substring(0, 50)}..."`);
+                log(`  📝 Found post #${allPosts.size}: "${post.text.substring(0, 50)}..."`);
               }
             }
           } catch {
@@ -207,13 +213,13 @@ export async function getLinkedInPosts(options: ScraperOptions = {}): Promise<Li
 
     // Navigate to activity page
     const activityUrl = `https://www.linkedin.com/in/${username}/recent-activity/all/`;
-    console.log(`📂 Navigating to: ${activityUrl}\n`);
+    log(`📂 Navigating to: ${activityUrl}\n`);
     await page.goto(activityUrl);
     await page.waitForLoadState("domcontentloaded");
 
     // Scroll to load all posts
     const postLimit = options.limit;
-    console.log("📜 Loading posts...\n");
+    log("📜 Loading posts...\n");
     await autoScroll(page, maxScrolls, postLimit ? () => allPosts.size >= postLimit : undefined);
 
     // Wait a bit for any remaining responses
@@ -244,21 +250,21 @@ export async function getLinkedInPosts(options: ScraperOptions = {}): Promise<Li
 
     const newCount = merged.length - existingCount;
     if (existingCount > 0) {
-      console.log(`\n✅ Done! Merged ${newPosts.length} posts with ${existingCount} existing. Total: ${merged.length} (${newCount > 0 ? `+${newCount} new` : "no new"}).`);
+      log(`\n✅ Done! Merged ${newPosts.length} posts with ${existingCount} existing. Total: ${merged.length} (${newCount > 0 ? `+${newCount} new` : "no new"}).`);
     } else {
-      console.log(`\n✅ Done! Collected ${merged.length} posts.`);
+      log(`\n✅ Done! Collected ${merged.length} posts.`);
     }
-    console.log(`📁 Saved to: ${outputPath}\n`);
+    log(`📁 Saved to: ${outputPath}\n`);
 
     const posts = merged;
 
     // Print summary
     const totalLikes = posts.reduce((sum, p) => sum + p.numLikes, 0);
     const totalComments = posts.reduce((sum, p) => sum + p.numComments, 0);
-    console.log(`📊 Summary:`);
-    console.log(`   Posts: ${posts.length}`);
-    console.log(`   Likes: ${totalLikes}`);
-    console.log(`   Comments: ${totalComments}`);
+    log(`📊 Summary:`);
+    log(`   Posts: ${posts.length}`);
+    log(`   Likes: ${totalLikes}`);
+    log(`   Comments: ${totalComments}`);
 
     return posts;
   } finally {

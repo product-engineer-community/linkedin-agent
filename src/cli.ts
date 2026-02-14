@@ -42,12 +42,14 @@ Options:
   -l, --limit <n>          최근 게시글 N개만 수집
   -o, --output <dir>       출력 디렉토리 (기본: 현재 디렉토리)
   -m, --max-scrolls <n>    최대 스크롤 횟수 (기본: 100)
+  --json                   JSON 출력 (stdout, 로그 숨김)
   -h, --help               도움말 출력
 
 Examples:
   linkedin-agent get                                          내 게시글 수집
   linkedin-agent get -p https://www.linkedin.com/in/someone   특정 프로필 게시글 수집
   linkedin-agent get -l 10                                    최근 10개만 수집
+  linkedin-agent get -l 5 --json                              최근 5개를 JSON으로 출력
 `);
 }
 
@@ -172,11 +174,12 @@ function fail(message: string, json: boolean): never {
 // Parsers
 // ---------------------------------------------------------------------------
 
-function parseGetArgs(args: string[]): { output: string; maxScrolls: number; profile?: string; limit?: number } {
+function parseGetArgs(args: string[]): { output: string; maxScrolls: number; profile?: string; limit?: number; json: boolean } {
   let output = process.cwd();
   let maxScrolls = 100;
   let profile: string | undefined;
   let limit: number | undefined;
+  let json = false;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -204,6 +207,9 @@ function parseGetArgs(args: string[]): { output: string; maxScrolls: number; pro
         maxScrolls = parseInt(args[++i], 10);
         if (isNaN(maxScrolls) || maxScrolls <= 0) { console.error("Error: --max-scrolls requires a positive number"); process.exit(1); }
         break;
+      case "--json":
+        json = true;
+        break;
       default:
         console.error(`Unknown option: ${args[i]}`);
         printGetHelp();
@@ -211,7 +217,7 @@ function parseGetArgs(args: string[]): { output: string; maxScrolls: number; pro
     }
   }
 
-  return { output, maxScrolls, profile, limit };
+  return { output, maxScrolls, profile, limit, json };
 }
 
 function parsePostArgs(args: string[]): { text?: string; file?: string; link?: string; json: boolean } {
@@ -451,7 +457,13 @@ const commandArgs = process.argv.slice(3);
 switch (command) {
   case "get":
     const getOpts = parseGetArgs(commandArgs);
-    getLinkedInPosts(getOpts).catch((err) => { console.error("❌ Error:", err); process.exit(1); });
+    getLinkedInPosts(getOpts).then((posts) => {
+      if (getOpts.json) process.stdout.write(JSON.stringify(posts) + "\n");
+    }).catch((err) => {
+      if (getOpts.json) { console.log(JSON.stringify({ success: false, error: String(err) })); }
+      else { console.error("❌ Error:", err); }
+      process.exit(1);
+    });
     break;
   case "post":
     handlePost(commandArgs).catch((err) => { console.error("❌ Error:", err); process.exit(1); });
