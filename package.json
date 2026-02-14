@@ -1,6 +1,6 @@
 {
   "name": "linkedin-agent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "LinkedIn automation — scrape posts, publish, edit, delete via REST API",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
