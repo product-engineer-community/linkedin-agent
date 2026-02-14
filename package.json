@@ -7,12 +7,14 @@
     "linkedin-agent": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "assets",
+    "scripts"
   ],
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build",
-    "postinstall": "npx playwright install chromium",
+    "postinstall": "node scripts/postinstall.js",
     "scrape": "ts-node src/scraper.ts"
   },
   "keywords": [
@@ -27,7 +29,11 @@
   "type": "commonjs",
   "repository": {
     "type": "git",
-    "url": "https://github.com/user/linkedin-agent"
+    "url": "git+https://github.com/product-engineer-community/linkedin-agent.git"
+  },
+  "homepage": "https://github.com/product-engineer-community/linkedin-agent#readme",
+  "bugs": {
+    "url": "https://github.com/product-engineer-community/linkedin-agent/issues"
   },
   "dependencies": {
     "playwright": "^1.58.2"
