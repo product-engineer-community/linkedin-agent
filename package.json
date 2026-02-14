@@ -1,10 +1,11 @@
 {
   "name": "linkedin-agent",
   "version": "1.0.0",
-  "description": "Scrape all your LinkedIn posts with engagement metrics via browser automation",
-  "main": "dist/scraper.js",
+  "description": "LinkedIn automation — scrape posts, publish, edit, delete via REST API",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
-    "linkedin-agent": "./dist/cli.js"
+    "linkedin-agent": "dist/cli.js"
   },
   "files": [
     "dist",

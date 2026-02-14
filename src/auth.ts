@@ -1,9 +1,10 @@
+import * as crypto from "crypto";
 import * as http from "http";
 import * as https from "https";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 
 const CREDENTIALS_PATH = path.join(os.homedir(), ".linkedin-agent", "credentials.json");
 const REDIRECT_URI = "http://localhost:3000/callback";
@@ -69,8 +70,8 @@ function httpsGet(
 }
 
 function saveCredentials(creds: Credentials): void {
-  fs.mkdirSync(path.dirname(CREDENTIALS_PATH), { recursive: true });
-  fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2), "utf-8");
+  fs.mkdirSync(path.dirname(CREDENTIALS_PATH), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2), { encoding: "utf-8", mode: 0o600 });
 }
 
 export function loadCredentials(): Credentials | null {
@@ -88,22 +89,30 @@ export async function authenticate(
   openUrlFn?: (url: string) => Promise<void>,
 ): Promise<Credentials> {
   // 1. Start callback server and wait for authorization code
+  const state = crypto.randomBytes(32).toString("hex");
+
   const authCode = await new Promise<string>((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const url = new URL(req.url || "", "http://localhost:3000");
       const code = url.searchParams.get("code");
+      const returnedState = url.searchParams.get("state");
       const error = url.searchParams.get("error");
 
-      if (code) {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end("Authentication complete! You can close this window.");
-        resolve(code);
-        server.close();
-      } else if (error) {
+      if (error) {
         const desc = url.searchParams.get("error_description") || error;
         res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
         res.end(`Error: ${desc}`);
         reject(new Error(`OAuth error: ${desc}`));
+        server.close();
+      } else if (code && returnedState === state) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("Authentication complete! You can close this window.");
+        resolve(code);
+        server.close();
+      } else if (code) {
+        res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("Invalid state parameter.");
+        reject(new Error("OAuth CSRF detected: state mismatch"));
         server.close();
       } else {
         res.writeHead(404);
@@ -111,7 +120,14 @@ export async function authenticate(
       }
     });
 
-    server.listen(3000, async () => {
+    const timeout = setTimeout(() => {
+      server.close();
+      reject(new Error("OAuth callback timed out after 5 minutes"));
+    }, 5 * 60 * 1000);
+
+    server.on("close", () => clearTimeout(timeout));
+
+    server.listen(3000, "127.0.0.1", async () => {
       const authUrl =
         "https://www.linkedin.com/oauth/v2/authorization?" +
         new URLSearchParams({
@@ -119,6 +135,7 @@ export async function authenticate(
           client_id: clientId,
           redirect_uri: REDIRECT_URI,
           scope: SCOPES,
+          state,
         }).toString();
 
       console.log("Opening browser for LinkedIn authentication...");
@@ -127,7 +144,7 @@ export async function authenticate(
       if (openUrlFn) {
         await openUrlFn(authUrl);
       } else {
-        exec(`open "${authUrl}"`);
+        execFile("open", [authUrl]);
       }
       console.log("Waiting for callback on localhost:3000...");
     });

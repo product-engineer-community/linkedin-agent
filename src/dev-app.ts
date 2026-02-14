@@ -216,7 +216,7 @@ export async function extractCredentials(page: Page, appId: string): Promise<{ c
   if (!clientSecret) throw new Error("Could not extract Client Secret");
 
   console.log(`  Client ID: ${clientId}`);
-  console.log(`  Client Secret: ${clientSecret.substring(0, 10)}...`);
+  console.log("  Client Secret: ******* (stored)");
   console.log("  ✅ Credentials extracted.\n");
 
   return { clientId, clientSecret };

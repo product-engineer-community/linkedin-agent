@@ -4,8 +4,12 @@ import * as fs from "fs";
 import * as path from "path";
 import { getLinkedInPosts } from "./scraper";
 import { authenticate, loadCredentials } from "./auth";
-import { postToLinkedIn, editLinkedInPost, deleteLinkedInPost } from "./poster";
+import { postToLinkedIn, editLinkedInPost, deleteLinkedInPost, type PostResult } from "./poster";
 import { setupDevApp } from "./dev-app";
+
+// ---------------------------------------------------------------------------
+// Help
+// ---------------------------------------------------------------------------
 
 function printHelp() {
   console.log(`
@@ -19,6 +23,9 @@ Commands:
   auth     OAuth 인증 설정
   edit     게시글 수정
   delete   게시글 삭제
+
+Global Options:
+  --json               JSON 출력 (agent/프로그램 연동용)
 
 Run 'linkedin-agent <command> --help' for command-specific options.
 `);
@@ -54,11 +61,12 @@ Options:
   -t, --text <text>        게시글 내용
   -f, --file <path>        파일에서 게시글 내용 읽기
   --link <url>             링크 첨부
+  --json                   JSON 출력
   -h, --help               도움말 출력
 
 Examples:
   linkedin-agent post -t "오늘의 게시글입니다."
-  linkedin-agent post -f ./post.md
+  linkedin-agent post -f ./post.md --json
   linkedin-agent post -t "내용" --link https://example.com
 `);
 }
@@ -85,6 +93,85 @@ Examples:
 `);
 }
 
+function printEditHelp() {
+  console.log(`
+Usage: linkedin-agent edit [options]
+
+기존 LinkedIn 게시글의 텍스트를 수정합니다.
+(링크, 이미지 등 첨부는 수정 불가 — LinkedIn API 제한)
+
+Options:
+  --id <post-id>           수정할 게시글 ID (urn:li:share:... 형식)
+  -t, --text <text>        새 게시글 내용
+  -f, --file <path>        파일에서 새 게시글 내용 읽기
+  --json                   JSON 출력
+  -h, --help               도움말 출력
+
+Examples:
+  linkedin-agent edit --id "urn:li:share:123456" -t "수정된 내용"
+  linkedin-agent edit --id "urn:li:share:123456" -f ./updated.md
+`);
+}
+
+function printDeleteHelp() {
+  console.log(`
+Usage: linkedin-agent delete [options]
+
+LinkedIn 게시글을 삭제합니다.
+
+Options:
+  --id <post-id>           삭제할 게시글 ID (urn:li:share:... 형식)
+  --json                   JSON 출력
+  -h, --help               도움말 출력
+
+Examples:
+  linkedin-agent delete --id "urn:li:share:123456"
+`);
+}
+
+// ---------------------------------------------------------------------------
+// JSON output helper
+// ---------------------------------------------------------------------------
+
+function outputResult(result: PostResult, json: boolean, action: string): void {
+  if (json) {
+    console.log(JSON.stringify(result));
+    if (!result.success) process.exit(1);
+    return;
+  }
+
+  if (result.success) {
+    switch (action) {
+      case "post":
+        console.log(`\n✅ Posted successfully!`);
+        if (result.postId) console.log(`   Post ID: ${result.postId}`);
+        break;
+      case "edit":
+        console.log(`\n✅ Post updated successfully!`);
+        break;
+      case "delete":
+        console.log(`\n✅ Post deleted successfully!`);
+        break;
+    }
+  } else {
+    console.error(`\n❌ Failed to ${action}: ${result.error}`);
+    process.exit(1);
+  }
+}
+
+function fail(message: string, json: boolean): never {
+  if (json) {
+    console.log(JSON.stringify({ success: false, error: message }));
+  } else {
+    console.error(message);
+  }
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Parsers
+// ---------------------------------------------------------------------------
+
 function parseGetArgs(args: string[]): { output: string; maxScrolls: number; profile?: string; limit?: number } {
   let output = process.cwd();
   let maxScrolls = 100;
@@ -100,34 +187,22 @@ function parseGetArgs(args: string[]): { output: string; maxScrolls: number; pro
       case "-p":
       case "--profile":
         profile = args[++i];
-        if (!profile) {
-          console.error("Error: --profile requires a LinkedIn profile URL");
-          process.exit(1);
-        }
+        if (!profile) { console.error("Error: --profile requires a LinkedIn profile URL"); process.exit(1); }
         break;
       case "-l":
       case "--limit":
         limit = parseInt(args[++i], 10);
-        if (isNaN(limit) || limit <= 0) {
-          console.error("Error: --limit requires a positive number");
-          process.exit(1);
-        }
+        if (isNaN(limit) || limit <= 0) { console.error("Error: --limit requires a positive number"); process.exit(1); }
         break;
       case "-o":
       case "--output":
         output = args[++i];
-        if (!output) {
-          console.error("Error: --output requires a directory path");
-          process.exit(1);
-        }
+        if (!output) { console.error("Error: --output requires a directory path"); process.exit(1); }
         break;
       case "-m":
       case "--max-scrolls":
         maxScrolls = parseInt(args[++i], 10);
-        if (isNaN(maxScrolls) || maxScrolls <= 0) {
-          console.error("Error: --max-scrolls requires a positive number");
-          process.exit(1);
-        }
+        if (isNaN(maxScrolls) || maxScrolls <= 0) { console.error("Error: --max-scrolls requires a positive number"); process.exit(1); }
         break;
       default:
         console.error(`Unknown option: ${args[i]}`);
@@ -139,10 +214,11 @@ function parseGetArgs(args: string[]): { output: string; maxScrolls: number; pro
   return { output, maxScrolls, profile, limit };
 }
 
-function parsePostArgs(args: string[]): { text?: string; file?: string; link?: string } {
+function parsePostArgs(args: string[]): { text?: string; file?: string; link?: string; json: boolean } {
   let text: string | undefined;
   let file: string | undefined;
   let link: string | undefined;
+  let json = false;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -153,25 +229,19 @@ function parsePostArgs(args: string[]): { text?: string; file?: string; link?: s
       case "-t":
       case "--text":
         text = args[++i];
-        if (!text) {
-          console.error("Error: --text requires content");
-          process.exit(1);
-        }
+        if (!text) { console.error("Error: --text requires content"); process.exit(1); }
         break;
       case "-f":
       case "--file":
         file = args[++i];
-        if (!file) {
-          console.error("Error: --file requires a file path");
-          process.exit(1);
-        }
+        if (!file) { console.error("Error: --file requires a file path"); process.exit(1); }
         break;
       case "--link":
         link = args[++i];
-        if (!link) {
-          console.error("Error: --link requires a URL");
-          process.exit(1);
-        }
+        if (!link) { console.error("Error: --link requires a URL"); process.exit(1); }
+        break;
+      case "--json":
+        json = true;
         break;
       default:
         console.error(`Unknown option: ${args[i]}`);
@@ -180,7 +250,7 @@ function parsePostArgs(args: string[]): { text?: string; file?: string; link?: s
     }
   }
 
-  return { text, file, link };
+  return { text, file, link, json };
 }
 
 function parseAuthArgs(args: string[]): { clientId?: string; clientSecret?: string; companyPage?: string } {
@@ -196,24 +266,15 @@ function parseAuthArgs(args: string[]): { clientId?: string; clientSecret?: stri
         process.exit(0);
       case "--client-id":
         clientId = args[++i];
-        if (!clientId) {
-          console.error("Error: --client-id requires a value");
-          process.exit(1);
-        }
+        if (!clientId) { console.error("Error: --client-id requires a value"); process.exit(1); }
         break;
       case "--client-secret":
         clientSecret = args[++i];
-        if (!clientSecret) {
-          console.error("Error: --client-secret requires a value");
-          process.exit(1);
-        }
+        if (!clientSecret) { console.error("Error: --client-secret requires a value"); process.exit(1); }
         break;
       case "--company-page":
         companyPage = args[++i];
-        if (!companyPage) {
-          console.error("Error: --company-page requires a LinkedIn Company Page URL");
-          process.exit(1);
-        }
+        if (!companyPage) { console.error("Error: --company-page requires a LinkedIn Company Page URL"); process.exit(1); }
         break;
       default:
         console.error(`Unknown option: ${args[i]}`);
@@ -225,22 +286,89 @@ function parseAuthArgs(args: string[]): { clientId?: string; clientSecret?: stri
   return { clientId, clientSecret, companyPage };
 }
 
+function parseEditArgs(args: string[]): { postId?: string; text?: string; file?: string; json: boolean } {
+  let postId: string | undefined;
+  let text: string | undefined;
+  let file: string | undefined;
+  let json = false;
+
+  for (let i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case "-h":
+      case "--help":
+        printEditHelp();
+        process.exit(0);
+      case "--id":
+        postId = args[++i];
+        if (!postId) { console.error("Error: --id requires a post ID"); process.exit(1); }
+        break;
+      case "-t":
+      case "--text":
+        text = args[++i];
+        if (!text) { console.error("Error: --text requires content"); process.exit(1); }
+        break;
+      case "-f":
+      case "--file":
+        file = args[++i];
+        if (!file) { console.error("Error: --file requires a file path"); process.exit(1); }
+        break;
+      case "--json":
+        json = true;
+        break;
+      default:
+        console.error(`Unknown option: ${args[i]}`);
+        printEditHelp();
+        process.exit(1);
+    }
+  }
+
+  return { postId, text, file, json };
+}
+
+function parseDeleteArgs(args: string[]): { postId?: string; json: boolean } {
+  let postId: string | undefined;
+  let json = false;
+
+  for (let i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case "-h":
+      case "--help":
+        printDeleteHelp();
+        process.exit(0);
+      case "--id":
+        postId = args[++i];
+        if (!postId) { console.error("Error: --id requires a post ID"); process.exit(1); }
+        break;
+      case "--json":
+        json = true;
+        break;
+      default:
+        console.error(`Unknown option: ${args[i]}`);
+        printDeleteHelp();
+        process.exit(1);
+    }
+  }
+
+  return { postId, json };
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
 async function handleAuth(args: string[]) {
   const opts = parseAuthArgs(args);
 
-  // Manual mode: client credentials provided → just run OAuth
   if (opts.clientId && opts.clientSecret) {
     await authenticate(opts.clientId, opts.clientSecret);
     console.log("\n✅ Auth successful. Credentials saved.");
     return;
   }
 
-  // Auto mode: create Developer App via Playwright → OAuth in same browser
   console.log("\n🚀 Auto-creating LinkedIn Developer App...\n");
 
   const { launchBrowser } = await import("./browser");
   const logoPath = path.join(__dirname, "..", "assets", "default-logo.png");
-
   const context = await launchBrowser();
 
   try {
@@ -260,220 +388,62 @@ async function handleAuth(args: string[]) {
   }
 }
 
+function resolveText(opts: { text?: string; file?: string }, json: boolean): string {
+  if (opts.file) {
+    if (!fs.existsSync(opts.file)) fail(`Error: File not found: ${opts.file}`, json);
+    return fs.readFileSync(opts.file, "utf-8").trim();
+  }
+  if (opts.text) return opts.text;
+  fail("Error: Provide content with -t or -f.", json);
+}
+
 async function handlePost(args: string[]) {
   const opts = parsePostArgs(args);
 
-  // Check authentication
   if (!loadCredentials()) {
-    console.error("❌ Authentication required. Run 'linkedin-agent auth' first.");
-    console.error("   You need a LinkedIn Developer App: https://developer.linkedin.com");
-    process.exit(1);
+    fail("❌ Authentication required. Run 'linkedin-agent auth' first.", opts.json);
   }
 
-  // Resolve post text
-  let text: string;
-  if (opts.file) {
-    if (!fs.existsSync(opts.file)) {
-      console.error(`Error: File not found: ${opts.file}`);
-      process.exit(1);
-    }
-    text = fs.readFileSync(opts.file, "utf-8").trim();
-  } else if (opts.text) {
-    text = opts.text;
-  } else {
-    console.error("Error: Provide post content with -t or -f.");
-    printPostHelp();
-    process.exit(1);
-  }
+  const text = resolveText(opts, opts.json);
 
-  console.log(`\n📝 Posting to LinkedIn (${text.length} chars)...`);
-  if (opts.link) {
-    console.log(`🔗 Link: ${opts.link}`);
+  if (!opts.json) {
+    console.log(`\n📝 Posting to LinkedIn (${text.length} chars)...`);
+    if (opts.link) console.log(`🔗 Link: ${opts.link}`);
   }
 
   const result = await postToLinkedIn({ text, linkUrl: opts.link });
-
-  if (result.success) {
-    console.log(`\n✅ Posted successfully!`);
-    if (result.postId) {
-      console.log(`   Post ID: ${result.postId}`);
-    }
-  } else {
-    console.error(`\n❌ Failed to post: ${result.error}`);
-    process.exit(1);
-  }
-}
-
-function printEditHelp() {
-  console.log(`
-Usage: linkedin-agent edit [options]
-
-기존 LinkedIn 게시글의 텍스트를 수정합니다.
-(링크, 이미지 등 첨부는 수정 불가 — LinkedIn API 제한)
-
-Options:
-  --id <post-id>           수정할 게시글 ID (urn:li:share:... 형식)
-  -t, --text <text>        새 게시글 내용
-  -f, --file <path>        파일에서 새 게시글 내용 읽기
-  -h, --help               도움말 출력
-
-Examples:
-  linkedin-agent edit --id "urn:li:share:123456" -t "수정된 내용"
-  linkedin-agent edit --id "urn:li:share:123456" -f ./updated.md
-`);
-}
-
-function parseEditArgs(args: string[]): { postId?: string; text?: string; file?: string } {
-  let postId: string | undefined;
-  let text: string | undefined;
-  let file: string | undefined;
-
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
-      case "-h":
-      case "--help":
-        printEditHelp();
-        process.exit(0);
-      case "--id":
-        postId = args[++i];
-        if (!postId) {
-          console.error("Error: --id requires a post ID");
-          process.exit(1);
-        }
-        break;
-      case "-t":
-      case "--text":
-        text = args[++i];
-        if (!text) {
-          console.error("Error: --text requires content");
-          process.exit(1);
-        }
-        break;
-      case "-f":
-      case "--file":
-        file = args[++i];
-        if (!file) {
-          console.error("Error: --file requires a file path");
-          process.exit(1);
-        }
-        break;
-      default:
-        console.error(`Unknown option: ${args[i]}`);
-        printEditHelp();
-        process.exit(1);
-    }
-  }
-
-  return { postId, text, file };
+  outputResult(result, opts.json, "post");
 }
 
 async function handleEdit(args: string[]) {
   const opts = parseEditArgs(args);
 
-  if (!loadCredentials()) {
-    console.error("❌ Authentication required. Run 'linkedin-agent auth' first.");
-    process.exit(1);
-  }
+  if (!loadCredentials()) fail("❌ Authentication required. Run 'linkedin-agent auth' first.", opts.json);
+  if (!opts.postId) fail("Error: --id is required.", opts.json);
 
-  if (!opts.postId) {
-    console.error("Error: --id is required.");
-    printEditHelp();
-    process.exit(1);
-  }
+  const text = resolveText(opts, opts.json);
 
-  let text: string;
-  if (opts.file) {
-    if (!fs.existsSync(opts.file)) {
-      console.error(`Error: File not found: ${opts.file}`);
-      process.exit(1);
-    }
-    text = fs.readFileSync(opts.file, "utf-8").trim();
-  } else if (opts.text) {
-    text = opts.text;
-  } else {
-    console.error("Error: Provide new content with -t or -f.");
-    printEditHelp();
-    process.exit(1);
-  }
-
-  console.log(`\n✏️ Editing post ${opts.postId} (${text.length} chars)...`);
+  if (!opts.json) console.log(`\n✏️ Editing post ${opts.postId} (${text.length} chars)...`);
 
   const result = await editLinkedInPost({ postId: opts.postId, text });
-
-  if (result.success) {
-    console.log(`\n✅ Post updated successfully!`);
-  } else {
-    console.error(`\n❌ Failed to edit: ${result.error}`);
-    process.exit(1);
-  }
-}
-
-function printDeleteHelp() {
-  console.log(`
-Usage: linkedin-agent delete [options]
-
-LinkedIn 게시글을 삭제합니다.
-
-Options:
-  --id <post-id>           삭제할 게시글 ID (urn:li:share:... 형식)
-  -h, --help               도움말 출력
-
-Examples:
-  linkedin-agent delete --id "urn:li:share:123456"
-`);
-}
-
-function parseDeleteArgs(args: string[]): { postId?: string } {
-  let postId: string | undefined;
-
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
-      case "-h":
-      case "--help":
-        printDeleteHelp();
-        process.exit(0);
-      case "--id":
-        postId = args[++i];
-        if (!postId) {
-          console.error("Error: --id requires a post ID");
-          process.exit(1);
-        }
-        break;
-      default:
-        console.error(`Unknown option: ${args[i]}`);
-        printDeleteHelp();
-        process.exit(1);
-    }
-  }
-
-  return { postId };
+  outputResult(result, opts.json, "edit");
 }
 
 async function handleDelete(args: string[]) {
   const opts = parseDeleteArgs(args);
 
-  if (!loadCredentials()) {
-    console.error("❌ Authentication required. Run 'linkedin-agent auth' first.");
-    process.exit(1);
-  }
+  if (!loadCredentials()) fail("❌ Authentication required. Run 'linkedin-agent auth' first.", opts.json);
+  if (!opts.postId) fail("Error: --id is required.", opts.json);
 
-  if (!opts.postId) {
-    console.error("Error: --id is required.");
-    printDeleteHelp();
-    process.exit(1);
-  }
-
-  console.log(`\n🗑️ Deleting post ${opts.postId}...`);
+  if (!opts.json) console.log(`\n🗑️ Deleting post ${opts.postId}...`);
 
   const result = await deleteLinkedInPost(opts.postId);
-
-  if (result.success) {
-    console.log(`\n✅ Post deleted successfully!`);
-  } else {
-    console.error(`\n❌ Failed to delete: ${result.error}`);
-    process.exit(1);
-  }
+  outputResult(result, opts.json, "delete");
 }
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 const command = process.argv[2];
 const commandArgs = process.argv.slice(3);
@@ -481,46 +451,25 @@ const commandArgs = process.argv.slice(3);
 switch (command) {
   case "get":
     const getOpts = parseGetArgs(commandArgs);
-    getLinkedInPosts(getOpts).catch((err) => {
-      console.error("❌ Error:", err);
-      process.exit(1);
-    });
+    getLinkedInPosts(getOpts).catch((err) => { console.error("❌ Error:", err); process.exit(1); });
     break;
-
   case "post":
-    handlePost(commandArgs).catch((err) => {
-      console.error("❌ Error:", err);
-      process.exit(1);
-    });
+    handlePost(commandArgs).catch((err) => { console.error("❌ Error:", err); process.exit(1); });
     break;
-
   case "auth":
-    handleAuth(commandArgs).catch((err) => {
-      console.error("❌ Error:", err);
-      process.exit(1);
-    });
+    handleAuth(commandArgs).catch((err) => { console.error("❌ Error:", err); process.exit(1); });
     break;
-
   case "edit":
-    handleEdit(commandArgs).catch((err) => {
-      console.error("❌ Error:", err);
-      process.exit(1);
-    });
+    handleEdit(commandArgs).catch((err) => { console.error("❌ Error:", err); process.exit(1); });
     break;
-
   case "delete":
-    handleDelete(commandArgs).catch((err) => {
-      console.error("❌ Error:", err);
-      process.exit(1);
-    });
+    handleDelete(commandArgs).catch((err) => { console.error("❌ Error:", err); process.exit(1); });
     break;
-
   case "-h":
   case "--help":
   case undefined:
     printHelp();
     break;
-
   default:
     console.error(`Unknown command: ${command}`);
     printHelp();
