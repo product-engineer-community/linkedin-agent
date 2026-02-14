@@ -1,0 +1,10 @@
+node_modules/
+dist/
+cookies.json
+data/
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+.omc/
+assets/

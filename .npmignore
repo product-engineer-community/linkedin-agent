@@ -1,0 +1,6 @@
+src/
+tsconfig.json
+cookies.json
+data/
+.omc/
+node_modules/
